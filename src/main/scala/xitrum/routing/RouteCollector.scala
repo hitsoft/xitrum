@@ -13,16 +13,26 @@ import xitrum.annotation._
 import xitrum.sockjs.SockJsPrefix
 
 case class DiscoveredAcc(
-  xitrumVersion:             String,
-  normalRoutes:              SerializableRouteCollection,
-  sockJsWithoutPrefixRoutes: SerializableRouteCollection,
-  sockJsMap:                 Map[String, SockJsClassAndOptions],
-  swaggerMap:                Map[Class[_ <: Action], Swagger]
-)
+                          xitrumVersion: String,
+                          normalRoutes: SerializableRouteCollection,
+                          sockJsWithoutPrefixRoutes: SerializableRouteCollection,
+                          sockJsMap: Map[String, SockJsClassAndOptions],
+                          swaggerMap: Map[Class[_ <: Action], Swagger]
+                        )
 
 /** Scan all classes to collect routes from actions. */
 object RouteCollector {
+
   import ActionAnnotations._
+
+  var _cacheJsonType: scala.collection.mutable.HashMap[Object, Option[Swagger.JsonType]] = _
+
+  def cacheJsonType: scala.collection.mutable.HashMap[Object, Option[Swagger.JsonType]] = {
+    if (_cacheJsonType == null) {
+      _cacheJsonType = new scala.collection.mutable.HashMap[Object, Option[Swagger.JsonType]]()
+    }
+    _cacheJsonType
+  }
 
   def deserializeCacheFileOrRecollect(cachedFile: File, cl: ClassLoader): DiscoveredAcc = {
     var acc = DiscoveredAcc(
@@ -37,7 +47,7 @@ object RouteCollector {
     // traits/classes extending Action, and their relationship. The relationship
     // is for the (Swagger) annotation inheritance feature. The traits/classes
     // are then loaded to get annotations.
-    val xitrumVersion     = xitrum.version.toString
+    val xitrumVersion = xitrum.version.toString
     val actionTreeBuilder = Scanner.foldLeft(cachedFile, ActionTreeBuilder(xitrumVersion), discovered(cl) _)
 
     if (actionTreeBuilder.xitrumVersion != xitrumVersion) {
@@ -45,6 +55,7 @@ object RouteCollector {
       acc
     } else {
       val ka = actionTreeBuilder.getConcreteActionsAndAnnotations(cl)
+      _cacheJsonType = null
       ka.foreach { case (klass, annotations) =>
         acc = processAnnotations(acc, klass, annotations)
       }
@@ -67,10 +78,10 @@ object RouteCollector {
     if (IgnoredPackages.isIgnored(relPath)) return acc
 
     try {
-      val withoutExt      = relPath.substring(0, relPath.length - ".class".length)
-      val className       = withoutExt.replace('/', '.')
-      val klass           = cl.loadClass(className)
-      val superclass      = klass.getSuperclass.asInstanceOf[Class[_]]
+      val withoutExt = relPath.substring(0, relPath.length - ".class".length)
+      val className = withoutExt.replace('/', '.')
+      val klass = cl.loadClass(className)
+      val superclass = klass.getSuperclass.asInstanceOf[Class[_]]
       val superclassNameo = if (superclass == null) None else Some(superclass.getName)
       acc.addBranches(klass.getName, superclassNameo, klass.getInterfaces.map(_.getName))
     } catch {
@@ -85,65 +96,65 @@ object RouteCollector {
   }
 
   private def processAnnotations(
-      acc:         DiscoveredAcc,
-      klass:       Class[_ <: Action],
-      annotations: ActionAnnotations
-  ): DiscoveredAcc = {
-    val className  = klass.getName
+                                  acc: DiscoveredAcc,
+                                  klass: Class[_ <: Action],
+                                  annotations: ActionAnnotations
+                                ): DiscoveredAcc = {
+    val className = klass.getName
     val fromSockJs = className.startsWith(classOf[SockJsPrefix].getPackage.getName)
-    val routes     = if (fromSockJs) acc.sockJsWithoutPrefixRoutes else acc.normalRoutes
+    val routes = if (fromSockJs) acc.sockJsWithoutPrefixRoutes else acc.normalRoutes
 
     collectNormalRoutes(routes, className, annotations)
     val newSockJsMap = collectSockJsMap(acc.sockJsMap, className, annotations)
     collectErrorRoutes(routes, className, annotations)
 
     val newSwaggerMap = collectSwagger(annotations) match {
-      case None          => acc.swaggerMap
+      case None => acc.swaggerMap
       case Some(swagger) => acc.swaggerMap + (klass -> swagger)
     }
     DiscoveredAcc(acc.xitrumVersion, acc.normalRoutes, acc.sockJsWithoutPrefixRoutes, newSockJsMap, newSwaggerMap)
   }
 
   private def collectNormalRoutes(
-      routes:      SerializableRouteCollection,
-      className:   String,
-      annotations: ActionAnnotations
-  ): Unit = {
-    val routeOrder          = optRouteOrder(annotations.routeOrder)  // -1: first, 1: last, 0: other
-    val cacheSecs           = optCacheSecs(annotations.cache)        // < 0: cache action, > 0: cache page, 0: no cache
+                                   routes: SerializableRouteCollection,
+                                   className: String,
+                                   annotations: ActionAnnotations
+                                 ): Unit = {
+    val routeOrder = optRouteOrder(annotations.routeOrder) // -1: first, 1: last, 0: other
+    val cacheSecs = optCacheSecs(annotations.cache) // < 0: cache action, > 0: cache page, 0: no cache
     val method_pattern_coll = ArrayBuffer.empty[(String, String)]
 
     annotations.routes.foreach { a =>
-      listMethodAndPattern(a).foreach { m_p   => method_pattern_coll.append(m_p) }
+      listMethodAndPattern(a).foreach { m_p => method_pattern_coll.append(m_p) }
     }
 
     method_pattern_coll.foreach { case (method, pattern) =>
-      val compiledPattern   = RouteCompiler.compile(pattern)
+      val compiledPattern = RouteCompiler.compile(pattern)
       val serializableRoute = new SerializableRoute(method, compiledPattern, className, cacheSecs)
-      val coll              = (routeOrder, method) match {
+      val coll = (routeOrder, method) match {
         case (-1, "GET") => routes.firstGETs
-        case ( 1, "GET") => routes.lastGETs
-        case ( 0, "GET") => routes.otherGETs
+        case (1, "GET") => routes.lastGETs
+        case (0, "GET") => routes.otherGETs
 
         case (-1, "POST") => routes.firstPOSTs
-        case ( 1, "POST") => routes.lastPOSTs
-        case ( 0, "POST") => routes.otherPOSTs
+        case (1, "POST") => routes.lastPOSTs
+        case (0, "POST") => routes.otherPOSTs
 
         case (-1, "PUT") => routes.firstPUTs
-        case ( 1, "PUT") => routes.lastPUTs
-        case ( 0, "PUT") => routes.otherPUTs
+        case (1, "PUT") => routes.lastPUTs
+        case (0, "PUT") => routes.otherPUTs
 
         case (-1, "PATCH") => routes.firstPATCHs
-        case ( 1, "PATCH") => routes.lastPATCHs
-        case ( 0, "PATCH") => routes.otherPATCHs
+        case (1, "PATCH") => routes.lastPATCHs
+        case (0, "PATCH") => routes.otherPATCHs
 
         case (-1, "DELETE") => routes.firstDELETEs
-        case ( 1, "DELETE") => routes.lastDELETEs
-        case ( 0, "DELETE") => routes.otherDELETEs
+        case (1, "DELETE") => routes.lastDELETEs
+        case (0, "DELETE") => routes.otherDELETEs
 
         case (-1, "WEBSOCKET") => routes.firstWEBSOCKETs
-        case ( 1, "WEBSOCKET") => routes.lastWEBSOCKETs
-        case ( 0, "WEBSOCKET") => routes.otherWEBSOCKETs
+        case (1, "WEBSOCKET") => routes.lastWEBSOCKETs
+        case (0, "WEBSOCKET") => routes.otherWEBSOCKETs
 
         case _ => throw new IllegalArgumentException
       }
@@ -152,12 +163,12 @@ object RouteCollector {
   }
 
   private def collectErrorRoutes(
-      routes:      SerializableRouteCollection,
-      className:   String,
-      annotations: ActionAnnotations
-  ): Unit = {
+                                  routes: SerializableRouteCollection,
+                                  className: String,
+                                  annotations: ActionAnnotations
+                                ): Unit = {
     annotations.error.foreach { a =>
-      val tpe       = a.tree.tpe
+      val tpe = a.tree.tpe
       val tpeString = tpe.toString
       if (tpeString == TYPE_OF_ERROR_404.toString) routes.error404 = Some(className)
       if (tpeString == TYPE_OF_ERROR_500.toString) routes.error500 = Some(className)
@@ -165,14 +176,13 @@ object RouteCollector {
   }
 
   private def collectSockJsMap(
-      sockJsMap:   Map[String, SockJsClassAndOptions],
-      className:   String,
-      annotations: ActionAnnotations
-  ): Map[String, SockJsClassAndOptions] =
-  {
+                                sockJsMap: Map[String, SockJsClassAndOptions],
+                                className: String,
+                                annotations: ActionAnnotations
+                              ): Map[String, SockJsClassAndOptions] = {
     var pathPrefix: String = null
     annotations.routes.foreach { a =>
-      val tpe       = a.tree.tpe
+      val tpe = a.tree.tpe
       val tpeString = tpe.toString
 
       if (tpeString == TYPE_OF_SOCKJS.toString)
@@ -182,11 +192,11 @@ object RouteCollector {
     if (pathPrefix == null) {
       sockJsMap
     } else {
-      val cl               = Thread.currentThread.getContextClassLoader
+      val cl = Thread.currentThread.getContextClassLoader
       val sockJsActorClass = cl.loadClass(className).asInstanceOf[Class[SockJsAction]]
-      val noWebSocket      = annotations.sockJsNoWebSocket.isDefined
-      var cookieNeeded     = Config.xitrum.response.sockJsCookieNeeded
-      if (annotations.sockJsCookieNeeded  .isDefined) cookieNeeded = true
+      val noWebSocket = annotations.sockJsNoWebSocket.isDefined
+      var cookieNeeded = Config.xitrum.response.sockJsCookieNeeded
+      if (annotations.sockJsCookieNeeded.isDefined) cookieNeeded = true
       if (annotations.sockJsNoCookieNeeded.isDefined) cookieNeeded = false
       sockJsMap + (pathPrefix -> new SockJsClassAndOptions(sockJsActorClass, !noWebSocket, cookieNeeded))
     }
@@ -200,7 +210,7 @@ object RouteCollector {
       case None => 0
 
       case Some(annotation) =>
-        val tpe       = annotation.tree.tpe
+        val tpe = annotation.tree.tpe
         val tpeString = tpe.toString
         if (tpeString == TYPE_OF_FIRST.toString)
           -1
@@ -217,23 +227,23 @@ object RouteCollector {
       case None => 0
 
       case Some(annotation) =>
-        val tpe       = annotation.tree.tpe
+        val tpe = annotation.tree.tpe
         val tpeString = tpe.toString
 
         if (tpeString == TYPE_OF_CACHE_ACTION_DAY.toString)
           -annotation.tree.children.tail.head.toString.toInt * 24 * 60 * 60
         else if (tpeString == TYPE_OF_CACHE_ACTION_HOUR.toString)
-          -annotation.tree.children.tail.head.toString.toInt      * 60 * 60
+          -annotation.tree.children.tail.head.toString.toInt * 60 * 60
         else if (tpeString == TYPE_OF_CACHE_ACTION_MINUTE.toString)
-          -annotation.tree.children.tail.head.toString.toInt           * 60
+          -annotation.tree.children.tail.head.toString.toInt * 60
         else if (tpeString == TYPE_OF_CACHE_ACTION_SECOND.toString)
           -annotation.tree.children.tail.head.toString.toInt
         else if (tpeString == TYPE_OF_CACHE_PAGE_DAY.toString)
           annotation.tree.children.tail.head.toString.toInt * 24 * 60 * 60
         else if (tpeString == TYPE_OF_CACHE_PAGE_HOUR.toString)
-          annotation.tree.children.tail.head.toString.toInt      * 60 * 60
+          annotation.tree.children.tail.head.toString.toInt * 60 * 60
         else if (tpeString == TYPE_OF_CACHE_PAGE_MINUTE.toString)
-          annotation.tree.children.tail.head.toString.toInt           * 60
+          annotation.tree.children.tail.head.toString.toInt * 60
         else if (tpeString == TYPE_OF_CACHE_PAGE_SECOND.toString)
           annotation.tree.children.tail.head.toString.toInt
         else
@@ -243,7 +253,7 @@ object RouteCollector {
 
   /** @return Seq[(method, pattern)] */
   private def listMethodAndPattern(annotation: universe.Annotation): Seq[(String, String)] = {
-    val tpe       = annotation.tree.tpe
+    val tpe = annotation.tree.tpe
     val tpeString = tpe.toString
 
     if (tpeString == TYPE_OF_GET.toString)
@@ -311,18 +321,22 @@ object RouteCollector {
             swaggerArgs = swaggerArgs :+ Swagger.Produces(contentTypes: _*)
           } else if (child0 == "xitrum.annotation.Swagger.Response.apply") {
             val code =
-                     if (children(1).toString.startsWith("xitrum.annotation.Swagger"))
+              if (children(1).toString.startsWith("xitrum.annotation.Swagger"))
                 0
               else
                 children(1).productElement(0).asInstanceOf[universe.Constant].value.toString.toInt
             val desc = children(2).productElement(0).asInstanceOf[universe.Constant].value.toString
 
-            val cl = Thread.currentThread.getContextClassLoader
-            val rm = universe.runtimeMirror(cl)
-            val tb = rm.mkToolBox()
-
-            val tpeOpt = if (children.length > 3) tb.eval(tb.untypecheck(children(3))).asInstanceOf[Option[Swagger.JsonType]] else None
-
+            var tpeOpt: Option[Swagger.JsonType] = None
+            if (children.length > 3) {
+              if (!cacheJsonType.contains(children(3))) {
+                val cl = Thread.currentThread.getContextClassLoader
+                val rm = universe.runtimeMirror(cl)
+                val tb = rm.mkToolBox()
+                cacheJsonType.put(children(3), tb.eval(tb.untypecheck(children(3))).asInstanceOf[Option[Swagger.JsonType]])
+              }
+              tpeOpt = cacheJsonType(children(3))
+            }
             swaggerArgs = swaggerArgs :+ Swagger.Response(code, desc, tpeOpt)
           } else if (child0 == "xitrum.annotation.Swagger.Schemes.apply") {
             val schemes = children.tail.map(_.productElement(0).asInstanceOf[universe.Constant].value.toString)
@@ -338,14 +352,16 @@ object RouteCollector {
               else
                 children(2).productElement(0).asInstanceOf[universe.Constant].value.toString
 
-            val cl = Thread.currentThread.getContextClassLoader
-            val rm = universe.runtimeMirror(cl)
-            val tb = rm.mkToolBox()
-
-            val tpe = tb.eval(tb.untypecheck(children(3))).asInstanceOf[Swagger.JsonType]
+            if (!cacheJsonType.contains(children(3))) {
+              val cl = Thread.currentThread.getContextClassLoader
+              val rm = universe.runtimeMirror(cl)
+              val tb = rm.mkToolBox()
+              cacheJsonType.put(children(3), Some(tb.eval(tb.untypecheck(children(3))).asInstanceOf[Swagger.JsonType]))
+            }
+            val tpe = cacheJsonType(children(3)).get
 
             swaggerArgs = swaggerArgs :+ Swagger.JsonBody(name, desc, tpe)
-          } else {  // param or optional param
+          } else { // param or optional param
             val name = children(1).productElement(0).asInstanceOf[universe.Constant].value.toString
 
             val desc =
@@ -363,10 +379,10 @@ object RouteCollector {
             builder.setCharAt("xitrum.annotation.Swagger".length, '$')
 
             // Ex: xitrum.annotation.Swagger$StringForm
-            val cl            = Thread.currentThread.getContextClassLoader
+            val cl = Thread.currentThread.getContextClassLoader
             val javaClassName = builder.toString
-            val klass         = cl.loadClass(javaClassName)
-            val constructor   = klass.getConstructor(classOf[String], classOf[String])
+            val klass = cl.loadClass(javaClassName)
+            val constructor = klass.getConstructor(classOf[String], classOf[String])
             swaggerArgs = swaggerArgs :+ constructor.newInstance(name, desc).asInstanceOf[SwaggerTypes.SwaggerArg]
           }
         }
